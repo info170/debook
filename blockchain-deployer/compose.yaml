@@ -1,0 +1,13 @@
+name: debook-blockchain-deployer
+services:
+  foundry:
+    image: ghcr.io/foundry-rs/foundry:stable
+    platform: linux/amd64
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    environment:
+      AUTHEO_NETWORK: ${AUTHEO_NETWORK:-testnet}
+      AUTHEO_RPC_URL: ${AUTHEO_RPC_URL:-https://rpc.testnet.autheo.com}
+      AUTHEO_CHAIN_ID: ${AUTHEO_CHAIN_ID:-21270}
+    entrypoint: ["forge"]

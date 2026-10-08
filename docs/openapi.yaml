@@ -1,0 +1,210 @@
+openapi: 3.0.3
+info:
+  title: Debook Booking API
+  version: 0.1.0
+  description: API for searching slots and creating, reading, and cancelling bookings.
+servers:
+  - url: http://localhost:8080
+    description: Local Docker environment
+paths:
+  /healthz:
+    get:
+      summary: Liveness check
+      operationId: health
+      tags: [System]
+      responses:
+        '200':
+          description: Process is running
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusResponse' }
+  /readyz:
+    get:
+      summary: Readiness check
+      operationId: ready
+      tags: [System]
+      responses:
+        '200':
+          description: API and PostgreSQL are ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusResponse' }
+        '503':
+          description: PostgreSQL is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+  /api/v1/slots:
+    get:
+      summary: Search slots
+      operationId: searchSlots
+      tags: [Slots]
+      parameters:
+        - { $ref: '#/components/parameters/RegionID' }
+        - name: resource_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: status
+          in: query
+          required: true
+          description: Comma-separated statuses. Multiple values are matched as alternatives because one slot has one status.
+          schema: { type: string, example: AVAILABLE }
+        - name: from
+          in: query
+          required: false
+          description: ISO-8601 timestamp; defaults to now.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: ISO-8601 timestamp; defaults to 24 hours after `from`.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Matching slots
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Slot' } }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v1/bookings:
+    post:
+      summary: Reserve a slot
+      operationId: createBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBookingRequest' }
+      responses:
+        '202':
+          description: Reservation created and awaiting workflow confirmation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
+  /api/v1/bookings/{booking_id}:
+    get:
+      summary: Get booking status
+      operationId: getBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: '#/components/parameters/BookingID'
+      responses:
+        '200':
+          description: Current booking state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/bookings/{booking_id}/ownership:
+    get:
+      summary: Verify blockchain ownership
+      operationId: verifyBookingOwnership
+      tags: [Bookings]
+      parameters:
+        - $ref: '#/components/parameters/BookingID'
+        - name: wallet_address
+          in: query
+          required: true
+          schema: { type: string, example: '0x8bbA1Fa0F82E5ec07B06950578abA23B7f52a285' }
+      responses:
+        '200':
+          description: Ownership result read from the Autheo contract
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnershipResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { description: Blockchain verification is not configured }
+  /api/v1/bookings/{booking_id}/cancel:
+    post:
+      summary: Cancel a booking
+      operationId: cancelBooking
+      tags: [Bookings]
+      parameters:
+        - $ref: '#/components/parameters/BookingID'
+      responses:
+        '200':
+          description: Booking cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties: { status: { type: string, example: CANCELLED } }
+        '409': { $ref: '#/components/responses/Conflict' }
+components:
+  parameters:
+    RegionID:
+      name: region_id
+      in: query
+      required: true
+      schema: { type: string, example: eu-1 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1 }
+    BookingID:
+      name: booking_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  schemas:
+    StatusResponse:
+      type: object
+      required: [status]
+      properties: { status: { type: string, example: ready } }
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties: { error: { type: string, example: slot is not available } }
+    CreateBookingRequest:
+      type: object
+      required: [slot_id, customer_ref, wallet_address]
+      properties:
+        slot_id: { type: string, format: uuid }
+        customer_ref: { type: string, description: External customer reference without PII. }
+        wallet_address: { type: string, description: EVM wallet that will own the blockchain proof. }
+        tenant_id: { type: string, description: Tenant scope; defaults to default. }
+    Booking:
+      type: object
+      required: [id, slot_id, status, customer_ref]
+      properties:
+        id: { type: string, format: uuid }
+        slot_id: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING_CONFIRMATION, CONFIRMED, CANCELLED, FAILED] }
+        customer_ref: { type: string }
+        wallet_address: { type: string }
+        expires_at: { type: string, format: date-time, nullable: true }
+    OwnershipResponse:
+      type: object
+      required: [booking_id, wallet_address, owned, proof_status]
+      properties:
+        booking_id: { type: string, format: uuid }
+        wallet_address: { type: string }
+        owned: { type: boolean }
+        proof_status: { type: string, enum: [PENDING, SUBMITTED, CONFIRMED, FAILED] }
+        tx_hash: { type: string }
+    Slot:
+      type: object
+      required: [id, region_id, resource_id, starts_at, ends_at, status]
+      properties:
+        id: { type: string, format: uuid }
+        region_id: { type: string }
+        resource_id: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        status: { type: string, enum: [AVAILABLE, RESERVED, BOOKED, CANCELLED] }
+  responses:
+    BadRequest: { description: Invalid request, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Conflict: { description: Conflict or invalid idempotency reuse, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    NotFound: { description: Resource not found, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    InternalError: { description: Internal server error, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
